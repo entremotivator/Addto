@@ -77,16 +77,13 @@ def test_postgres_connection(conn_params: dict):
 # SQL Script Loader
 # ----------------------------
 
-def get_sql_scripts(folder="sql"):
+def get_sql_scripts(folder="."):
     """
-    Load SQL scripts from a folder into a dict {filename: content}.
+    Load SQL scripts from the SAME directory as App.py into a dict {filename: content}.
     Sorted by filename to ensure correct order.
     """
     scripts = {}
-    folder_path = os.path.join(os.path.dirname(__file__), folder)
-
-    if not os.path.exists(folder_path):
-        return scripts
+    folder_path = os.path.abspath(folder)
 
     for filename in sorted(os.listdir(folder_path)):
         if filename.endswith(".sql"):
@@ -166,7 +163,7 @@ def main():
 
         scripts = get_sql_scripts()
         if not scripts:
-            st.warning("⚠️ No SQL scripts found. Place them in a `sql/` folder next to App.py")
+            st.warning("⚠️ No SQL scripts found in this folder")
         else:
             for script_name, script_content in scripts.items():
                 with st.expander(f"📄 {script_name}", expanded=False):
@@ -236,9 +233,9 @@ def main():
     st.divider()
     st.markdown("""
     ### 📚 Next Steps
-    1. Add your **Supabase URL and Anon Key**
-    2. Add your **Database Password** (postgres user password)
-    3. Add **Consumer Secret** for subscription API access
+    1. Put your `.sql` files in the **same folder** as `App.py`
+    2. Add your **Supabase URL and Anon Key**
+    3. Add your **Database Password** (postgres user password)
     4. Test the connection
     5. Run the schema setup
     6. Verify the tables in Supabase dashboard
@@ -247,3 +244,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
