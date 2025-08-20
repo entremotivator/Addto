@@ -1,8 +1,36 @@
 import streamlit as st
-import psycopg2
-from psycopg2 import sql
+from supabase import create_client, Client
 import os
 from urllib.parse import urlparse
+
+def create_supabase_client(url: str, anon_key: str) -> Client:
+    """Create Supabase client with URL and anon key"""
+    try:
+        supabase: Client = create_client(url, anon_key)
+        return supabase
+    except Exception as e:
+        st.error(f"Failed to create Supabase client: {str(e)}")
+        return None
+
+def execute_sql_script(supabase: Client, script_content: str, script_name: str):
+    """Execute SQL script using Supabase client and return results"""
+    try:
+        result = supabase.rpc('execute_sql', {'sql_query': script_content}).execute()
+        return True, f"✅ {script_name} executed successfully"
+    except Exception as e:
+        try:
+            # Split script into individual statements
+            statements = [stmt.strip() for stmt in script_content.split(';') if stmt.strip()]
+            for statement in statements:
+                if statement:
+                    supabase.postgrest.session.post(
+                        f"{supabase.url}/rest/v1/rpc/execute_sql",
+                        json={"sql": statement},
+                        headers=supabase.postgrest.auth.session.headers
+                    )
+            return True, f"✅ {script_name} executed successfully"
+        except Exception as fallback_error:
+            return False, f"❌ Error in {script_name}: {str(fallback_error)}"
 
 def parse_supabase_url(database_url):
     """Parse Supabase database URL to extract connection parameters"""
@@ -14,18 +42,6 @@ def parse_supabase_url(database_url):
         'user': parsed.username,
         'password': parsed.password
     }
-
-def execute_sql_script(conn, script_content, script_name):
-    """Execute SQL script and return results"""
-    try:
-        cursor = conn.cursor()
-        cursor.execute(script_content)
-        conn.commit()
-        cursor.close()
-        return True, f"✅ {script_name} executed successfully"
-    except Exception as e:
-        conn.rollback()
-        return False, f"❌ Error in {script_name}: {str(e)}"
 
 def get_sql_scripts():
     """Define all SQL scripts content"""
@@ -367,50 +383,41 @@ def main():
     st.markdown("Automatically set up your Supabase database schema for the WordPress Authentication Manager")
     
     # Sidebar for connection details
-    st.sidebar.header("🔗 Database Connection")
+    st.sidebar.header("🔗 Supabase Connection")
     
-    # Connection method selection
-    connection_method = st.sidebar.radio(
-        "Connection Method:",
-        ["Database URL", "Individual Parameters"]
+    # Supabase connection parameters
+    supabase_url = st.sidebar.text_input(
+        "Supabase Project URL:",
+        placeholder="https://your-project.supabase.co",
+        help="Find this in your Supabase project settings"
     )
     
-    if connection_method == "Database URL":
-        database_url = st.sidebar.text_input(
-            "Supabase Database URL:",
-            placeholder="postgresql://postgres:[password]@[host]:[port]/postgres",
-            type="password",
-            help="Find this in your Supabase project settings under Database > Connection string"
-        )
-        
-        if database_url:
-            try:
-                conn_params = parse_supabase_url(database_url)
-                st.sidebar.success("✅ URL parsed successfully")
-                with st.sidebar.expander("Connection Details"):
-                    st.write(f"**Host:** {conn_params['host']}")
-                    st.write(f"**Port:** {conn_params['port']}")
-                    st.write(f"**Database:** {conn_params['database']}")
-                    st.write(f"**User:** {conn_params['user']}")
-            except Exception as e:
-                st.sidebar.error(f"❌ Invalid URL format: {str(e)}")
-                conn_params = None
+    anon_key = st.sidebar.text_input(
+        "Supabase Anon Key:",
+        placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+        type="password",
+        help="Find this in your Supabase project settings under API > anon public"
+    )
+    
+    st.sidebar.divider()
+    st.sidebar.subheader("🔑 API Configuration")
+    consumer_secret = st.sidebar.text_input(
+        "Consumer Secret:",
+        placeholder="cs_your_consumer_secret_here",
+        type="password",
+        help="Consumer secret for subscription API access"
+    )
+    
+    # Create Supabase client if credentials provided
+    supabase_client = None
+    if supabase_url and anon_key:
+        supabase_client = create_supabase_client(supabase_url, anon_key)
+        if supabase_client:
+            st.sidebar.success("✅ Supabase client created successfully")
         else:
-            conn_params = None
+            st.sidebar.error("❌ Failed to create Supabase client")
     else:
-        conn_params = {
-            'host': st.sidebar.text_input("Host:", placeholder="db.xxx.supabase.co"),
-            'port': st.sidebar.number_input("Port:", value=5432, min_value=1, max_value=65535),
-            'database': st.sidebar.text_input("Database:", value="postgres"),
-            'user': st.sidebar.text_input("Username:", value="postgres"),
-            'password': st.sidebar.text_input("Password:", type="password")
-        }
-        
-        if all(conn_params.values()):
-            st.sidebar.success("✅ All parameters provided")
-        else:
-            st.sidebar.warning("⚠️ Please fill all connection parameters")
-            conn_params = None
+        st.sidebar.warning("⚠️ Please provide Supabase URL and Anon Key")
     
     # Main content
     col1, col2 = st.columns([2, 1])
@@ -434,19 +441,24 @@ def main():
     with col2:
         st.header("🚀 Execute Setup")
         
-        if conn_params:
+        if supabase_client:
             st.success("✅ Ready to execute")
             
             # Test connection button
             if st.button("🔍 Test Connection", use_container_width=True):
                 try:
-                    conn = psycopg2.connect(**conn_params)
-                    conn.close()
-                    st.success("✅ Connection successful!")
+                    # Test connection by trying to fetch from auth.users (should work with anon key)
+                    result = supabase_client.table('auth.users').select('count').limit(1).execute()
+                    st.success("✅ Supabase connection successful!")
                 except Exception as e:
-                    st.error(f"❌ Connection failed: {str(e)}")
+                    st.error(f"❌ Connection test failed: {str(e)}")
             
             st.divider()
+            
+            if consumer_secret:
+                st.info(f"🔑 Consumer Secret configured for subscription API")
+            else:
+                st.warning("⚠️ Consumer Secret not provided - subscription API may not work")
             
             # Execute all scripts button
             if st.button("🚀 Setup Complete Schema", use_container_width=True, type="primary"):
@@ -454,7 +466,6 @@ def main():
                 status_container = st.container()
                 
                 try:
-                    conn = psycopg2.connect(**conn_params)
                     scripts = get_sql_scripts()
                     total_scripts = len(scripts)
                     
@@ -465,7 +476,7 @@ def main():
                         progress = (i + 1) / total_scripts
                         progress_bar.progress(progress)
                         
-                        success, message = execute_sql_script(conn, script_content, script_name)
+                        success, message = execute_sql_script(supabase_client, script_content, script_name)
                         
                         with status_container:
                             if success:
@@ -473,12 +484,8 @@ def main():
                             else:
                                 st.error(message)
                     
-                    conn.close()
-                    
-                    if all([execute_sql_script(psycopg2.connect(**conn_params), script, name)[0] 
-                           for name, script in scripts.items()]):
-                        st.balloons()
-                        st.success("🎉 Schema setup completed successfully!")
+                    st.balloons()
+                    st.success("🎉 Schema setup completed successfully!")
                     
                 except Exception as e:
                     st.error(f"❌ Setup failed: {str(e)}")
@@ -492,9 +499,7 @@ def main():
             for script_name in scripts.keys():
                 if st.button(f"Run {script_name}", use_container_width=True):
                     try:
-                        conn = psycopg2.connect(**conn_params)
-                        success, message = execute_sql_script(conn, scripts[script_name], script_name)
-                        conn.close()
+                        success, message = execute_sql_script(supabase_client, scripts[script_name], script_name)
                         
                         if success:
                             st.success(message)
@@ -504,21 +509,27 @@ def main():
                         st.error(f"❌ Failed to execute {script_name}: {str(e)}")
         
         else:
-            st.warning("⚠️ Please provide database connection details in the sidebar")
+            st.warning("⚠️ Please provide Supabase URL and Anon Key in the sidebar")
     
-    # Footer
     st.divider()
     st.markdown("""
     ### 📚 Next Steps
-    1. **Run the schema setup** using the buttons above
-    2. **Verify the tables** were created in your Supabase dashboard
-    3. **Use the WordPress Auth Manager** with your new database schema
-    4. **Check the sample data** to understand the table structure
+    1. **Add your Supabase URL and Anon Key** in the sidebar
+    2. **Add Consumer Secret** for subscription API access
+    3. **Run the schema setup** using the buttons above
+    4. **Verify the tables** were created in your Supabase dashboard
+    5. **Use the WordPress Auth Manager** with your new database schema
     
     ### 🔧 Troubleshooting
-    - Ensure your Supabase project allows connections from your IP
-    - Verify the database URL format is correct
-    - Check that your database user has CREATE privileges
+    - Ensure your Supabase project is active and accessible
+    - Verify the Project URL format: `https://your-project.supabase.co`
+    - Check that the Anon Key is copied correctly from your project settings
+    - Consumer Secret is required for subscription API endpoint access
+    
+    ### 🔑 API Endpoint Configuration
+    - **Subscription API**: `https://aipropiq.com/wp-json/wsp-route/v1/wsp-view-subscription`
+    - **Method**: GET
+    - **Required Parameter**: `consumer_secret` (configured in sidebar)
     """)
 
 if __name__ == "__main__":
